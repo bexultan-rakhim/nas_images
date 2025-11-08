@@ -96,7 +96,7 @@ fn get_canonical_path_if_image(entry: &DirEntry) -> Option<String> {
             .ok()
             .and_then(|path_buf| path_buf.to_str().map(|s| s.to_string()))
     } else {
-        return None;
+         None
     }
 }
 
@@ -115,10 +115,8 @@ fn find_images_recursively(
             if let Err(e) = find_images_recursively(&path, paths_accumulator) {
                 info!("Error accessing subdirectory {:?}: {}", path, e);
             }
-        } else {
-            if let Some(image_paths) = get_canonical_path_if_image(&entry) {
-                paths_accumulator.push(image_paths);
-            }
+        } else if let Some(image_paths) = get_canonical_path_if_image(&entry) {
+            paths_accumulator.push(image_paths);
         }
     }
     Ok(())
@@ -144,7 +142,7 @@ impl MediaState {
         }
 
         match find_absolute_image_path(directory_path) {
-            Ok(paths) => if paths.len() > 0 {
+            Ok(paths) => if !paths.is_empty() {
                     Ok(MediaState{ paths })
                 } else {
                 Err(format!("Directory does not contain images: {}", directory_path_str))

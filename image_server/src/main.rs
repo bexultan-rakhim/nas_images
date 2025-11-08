@@ -1,10 +1,12 @@
 use axum::{
     body::Body,
+    extract::State,
     http::{header, Response, StatusCode},
     response::{IntoResponse, Response as AxumResponse},
     routing::get,
     Router,
 };
+use std::sync::Arc;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
@@ -33,14 +35,21 @@ async fn main() {
         ]
     ).unwrap();
 
-    let app = Router::new()
-        .route("/get_random_art", get(get_random_art_handler));
-    let addr = SocketAddr::from(( [0, 0, 0, 0], 3000 ));
-    info!(" Server started, listening on http://{}", addr);
+    match MediaState::new("/mnt/media/Images/Art/") {
+        Ok(state) => {
+            let shared_state = Arc::new(state);
+            let app = Router::new()
+                .route("/get_random_art", get(get_random_art_handler))
+                .with_state(shared_state);
+            let addr = SocketAddr::from(( [0, 0, 0, 0], 3000 ));
+            info!(" Server started, listening on http://{}", addr);
 
-    let listener = TcpListener::bind(addr).await.unwrap();
+            let listener = TcpListener::bind(addr).await.unwrap();
 
-    axum::serve(listener, app).await.unwrap();
+            axum::serve(listener, app).await.unwrap();
+        }
+        Err(e) => info!("Failed to load media {}", e),
+    }
 }
 
 enum ImageError {
@@ -121,35 +130,49 @@ fn find_absolute_image_path(directory_path: &Path) -> Result<Vec<String>, std::i
     Ok(image_paths)
 }
 
-fn get_random_image(directory_path_str: &str) -> String {
-    let directory_path = Path::new(directory_path_str);
-
-    if !directory_path.is_dir() {
-        info!("Error: Path is not a directory: {}", directory_path_str);
-        return String::new();
-    }
-
-    let image_paths = match find_absolute_image_path(directory_path) {
-        Ok(paths) => paths,
-        Err(_e) => {
-            info!("No supoorted image found in directory: {}", directory_path_str);
-            return String::new();
-        }
-    };
-
-    let image_count = image_paths.len();
-    if image_count == 0 {
-        info!("No suported images found in directory: {}", directory_path_str);
-        return String::new();
-    }
-
-    let random_index = rand::thread_rng().gen_range(0..image_count);
-
-    image_paths[random_index].clone()
+#[derive(Clone)]
+pub struct MediaState {
+    paths: Vec<String>
 }
 
-async fn get_random_art_handler() -> Result<impl IntoResponse, ImageError> {
-    let img = ImageReader::open(Path::new(&get_random_image("/mnt/media/Images/Art/"))).map_err(ImageError::IO)?
+impl MediaState {
+    pub fn new(directory_path_str: &str) -> Result<Self, String> {
+        let directory_path = Path::new(directory_path_str);
+
+        if !directory_path.is_dir() {
+            return Err(format!("Error: Path is not a directory: {}", directory_path_str));
+        }
+
+        match find_absolute_image_path(directory_path) {
+            Ok(paths) => if paths.len() > 0 {
+                    Ok(MediaState{ paths })
+                } else {
+                Err(format!("Directory does not contain images: {}", directory_path_str))
+            },
+            Err(_e) => Err(
+                format!("No supoorted image found in directory: {}", directory_path_str)
+            )
+        }
+    }
+
+    pub fn image_count(&self) -> usize {
+        self.paths.len()
+    }
+
+    pub fn get_random_image(&self) -> &str {
+        let image_count = self.image_count();
+        
+        let random_index = rand::thread_rng().gen_range(0..image_count);
+
+        &self.paths[random_index]
+    }
+}
+
+async fn get_random_art_handler(
+    State(state): State<Arc<MediaState>>,
+) -> Result<impl IntoResponse, ImageError> {
+    let img_path = state.get_random_image();
+    let img = ImageReader::open(Path::new(img_path)).map_err(ImageError::IO)?
         .with_guessed_format().map_err(ImageError::IO)?
         .decode().map_err(ImageError::Load)?;
 

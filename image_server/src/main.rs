@@ -18,11 +18,13 @@ use std::fs::{self, File, DirEntry};
 
 use rand::Rng;
 
-use log::{info, LevelFilter};
+use log::{info, error, LevelFilter};
 use simplelog::{CombinedLogger, Config, WriteLogger};
 
-const IMAGE_EXTENSION: [&str; 3] = ["png", "jpg", "jpeg"];
+use serde::Deserialize;
 
+const IMAGE_EXTENSION: [&str; 3] = ["png", "jpg", "jpeg"];
+const MEDIA_PATH: &str = "/home/bex/Code/Projects/nas_images/image_server/config/image_server.toml";
 #[tokio::main]
 async fn main() {
     CombinedLogger::init(
@@ -30,25 +32,26 @@ async fn main() {
             WriteLogger::new(
                 LevelFilter::Info,
                 Config::default(),
-                File::create("my_rust_binary.log").unwrap()
+                File::create("nas_server.log").unwrap()
             ),
         ]
     ).unwrap();
+    
+    let media_confg = MediaConfig::new(MEDIA_PATH).unwrap(); 
 
-    match MediaState::new("/mnt/media/Images/Art/") {
+    match MediaState::new(media_confg) {
         Ok(state) => {
+            let addr = state.media_config.network.clone(); 
+            info!(" Server started, listening on http://{}", addr);
+            let listener = TcpListener::bind(addr).await.unwrap();
+            
             let shared_state = Arc::new(state);
             let app = Router::new()
                 .route("/get_random_art", get(get_random_art_handler))
                 .with_state(shared_state);
-            let addr = SocketAddr::from(( [0, 0, 0, 0], 3000 ));
-            info!(" Server started, listening on http://{}", addr);
-
-            let listener = TcpListener::bind(addr).await.unwrap();
-
             axum::serve(listener, app).await.unwrap();
         }
-        Err(e) => info!("Failed to load media {}", e),
+        Err(e) => error!("Failed to load media {}", e),
     }
 }
 
@@ -63,17 +66,17 @@ impl IntoResponse for ImageError {
         let (status, message) = match self {
             ImageError::IO(e) => {
                 let error_msg = format!("Failed during IO image: {}", e);
-                info!("{}",error_msg);
+                error!("{}",error_msg);
                 (StatusCode::INTERNAL_SERVER_ERROR, error_msg)
             }
             ImageError::Load(e) => {
                 let error_msg = format!("Failed to load image: {}", e);
-                info!("{}",error_msg);
+                error!("{}",error_msg);
                 (StatusCode::INTERNAL_SERVER_ERROR, error_msg)
             }
             ImageError::Encode(e) => {
                 let error_msg = format!("Failed to encode Image: {}", e);
-                info!("{}",error_msg);
+                error!("{}",error_msg);
                 (StatusCode::INTERNAL_SERVER_ERROR, error_msg)
             }
         };
@@ -113,7 +116,7 @@ fn find_images_recursively(
         
         if path.is_dir() {
             if let Err(e) = find_images_recursively(&path, paths_accumulator) {
-                info!("Error accessing subdirectory {:?}: {}", path, e);
+                error!("Error accessing subdirectory {:?}: {}", path, e);
             }
         } else if let Some(image_paths) = get_canonical_path_if_image(&entry) {
             paths_accumulator.push(image_paths);
@@ -122,6 +125,7 @@ fn find_images_recursively(
     Ok(())
 
 }
+
 fn find_absolute_image_path(directory_path: &Path) -> Result<Vec<String>, std::io::Error> {
     let mut image_paths = Vec::new();
     find_images_recursively(directory_path, &mut image_paths)?;
@@ -130,25 +134,26 @@ fn find_absolute_image_path(directory_path: &Path) -> Result<Vec<String>, std::i
 
 #[derive(Clone)]
 pub struct MediaState {
+    media_config: MediaConfig,
     paths: Vec<String>
 }
 
 impl MediaState {
-    pub fn new(directory_path_str: &str) -> Result<Self, String> {
-        let directory_path = Path::new(directory_path_str);
+    pub fn new(media_config: MediaConfig) -> Result<Self, String> {
+        let directory_path = Path::new(&media_config.media);
 
         if !directory_path.is_dir() {
-            return Err(format!("Error: Path is not a directory: {}", directory_path_str));
+            return Err(format!("Error: Path is not a directory: {}", &media_config.media));
         }
 
         match find_absolute_image_path(directory_path) {
             Ok(paths) => if !paths.is_empty() {
-                    Ok(MediaState{ paths })
+                    Ok(MediaState{media_config, paths })
                 } else {
-                Err(format!("Directory does not contain images: {}", directory_path_str))
+                Err(format!("Directory does not contain images: {}", &media_config.media))
             },
             Err(_e) => Err(
-                format!("No supoorted image found in directory: {}", directory_path_str)
+                format!("No supoorted image found in directory: {}", &media_config.media)
             )
         }
     }
@@ -159,9 +164,7 @@ impl MediaState {
 
     pub fn get_random_image(&self) -> &str {
         let image_count = self.image_count();
-        
         let random_index = rand::thread_rng().gen_range(0..image_count);
-
         &self.paths[random_index]
     }
 }
@@ -169,12 +172,16 @@ impl MediaState {
 async fn get_random_art_handler(
     State(state): State<Arc<MediaState>>,
 ) -> Result<impl IntoResponse, ImageError> {
-    let img_path = state.get_random_image();
+    let state_clone = Arc::clone(&state); 
+    let img_path = state_clone.get_random_image();
     let img = ImageReader::open(Path::new(img_path)).map_err(ImageError::IO)?
         .with_guessed_format().map_err(ImageError::IO)?
         .decode().map_err(ImageError::Load)?;
-
-    let thumb = img.thumbnail(720, 720);
+    
+    let resolution: u32 = state_clone.media_config.image.resolution;
+    let thumb = img.thumbnail(
+        resolution,
+        resolution);
     let mut buffer = Cursor::new(Vec::new());
     thumb.write_to(&mut buffer, ImageFormat::Jpeg)
         .map_err(ImageError::Encode)?;
@@ -186,4 +193,50 @@ async fn get_random_art_handler(
             .body(Body::from(buffer.into_inner()))
             .unwrap()
     )
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NetworkConfigRaw {
+    pub addr: [u8; 4], 
+    pub port: u16,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ImageConfig {
+    pub resolution: u32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MediaConfigRaw {
+    #[serde(rename = "media_dir")]
+    pub media: String,
+    pub network: NetworkConfigRaw,
+    pub image: ImageConfig,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct MediaConfig {
+    pub media: String,
+    pub network: SocketAddr,
+    pub image: ImageConfig,
+}
+
+impl MediaConfig {
+    pub fn new( path: &str) -> Result<Self, String> {
+        let contents = std::fs::read_to_string(path)
+            .map_err(
+                |e| format!("Could not read config file '{}': {}", path, e))?;
+        let raw_config: MediaConfigRaw = toml::from_str(&contents)
+            .map_err(
+                |e| format!(
+                    "Could not parse TOML from file '{}': {}", path, e))?;
+        let network_socket = SocketAddr::from(
+            (raw_config.network.addr, raw_config.network.port));
+
+        Ok(MediaConfig {
+            media: raw_config.media,
+            network: network_socket,  
+            image: raw_config.image,
+        })
+    }
 }

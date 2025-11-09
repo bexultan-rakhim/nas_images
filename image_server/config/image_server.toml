@@ -1,0 +1,8 @@
+media_dir = "/mnt/media/Images/Art/"
+
+[network]
+addr = [0, 0, 0, 0]
+port = 3000
+
+[image]
+resolution = 720

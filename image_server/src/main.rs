@@ -22,22 +22,31 @@ use log::{info, error, LevelFilter};
 use simplelog::{CombinedLogger, Config, WriteLogger};
 
 use serde::Deserialize;
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(long)]
+    config: String,
+    log: String,
+}
 
 const IMAGE_EXTENSION: [&str; 3] = ["png", "jpg", "jpeg"];
-const MEDIA_PATH: &str = "/home/bex/Code/Projects/nas_images/image_server/config/image_server.toml";
 #[tokio::main]
 async fn main() {
+    let args = Args::parse();
     CombinedLogger::init(
         vec![
             WriteLogger::new(
                 LevelFilter::Info,
                 Config::default(),
-                File::create("nas_server.log").unwrap()
+                File::create(args.log + "nas_server.log").unwrap()
             ),
         ]
     ).unwrap();
     
-    let media_confg = MediaConfig::new(MEDIA_PATH).unwrap(); 
+    let media_confg = MediaConfig::new(&args.config).unwrap(); 
 
     match MediaState::new(media_confg) {
         Ok(state) => {

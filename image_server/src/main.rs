@@ -181,13 +181,12 @@ impl MediaState {
 async fn get_random_art_handler(
     State(state): State<Arc<MediaState>>,
 ) -> Result<impl IntoResponse, ImageError> {
-    let state_clone = Arc::clone(&state); 
-    let img_path = state_clone.get_random_image();
+    let img_path = state.get_random_image();
     let img = ImageReader::open(Path::new(img_path)).map_err(ImageError::IO)?
         .with_guessed_format().map_err(ImageError::IO)?
         .decode().map_err(ImageError::Load)?;
     
-    let resolution: u32 = state_clone.media_config.image.resolution;
+    let resolution: u32 = state.media_config.image.resolution;
     let thumb = img.thumbnail(
         resolution,
         resolution);
